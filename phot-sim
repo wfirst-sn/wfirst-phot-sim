@@ -1,0 +1,209 @@
+#!/usr/bin/env python
+
+import os
+
+import numpy as np
+import sncosmo
+from astropy.time import Time
+from astropy.table import Table
+from scipy.stats import norm, expon
+from tqdm import tqdm
+
+# register bandpasses
+bandnames = ['f184', 'h158', 'j129', 'y106', 'z087']
+for name in bandnames:
+    band = sncosmo.read_bandpass('bandpasses/{}.txt'.format(name), name=name)
+    sncosmo.register(band, name=name)
+
+
+def plot_bands(fname):
+    from matplotlib import pyplot as plt
+
+    for name in bandnames:
+        band = sncosmo.get_bandpass(name)
+        plt.plot(band.wave, band.trans, label=name)
+    plt.legend()
+    plt.savefig(fname)
+    plt.close()
+    plt.clf()
+
+
+def write_lc_psnid(fname, time, band, flux, fluxerr, meta=None):
+    """Write a light curve in a format that PSNID can read."""
+    
+    with open(fname, 'w') as f:
+        if meta is not None:
+            for key, val in meta.items():
+                f.write("{}: {}\n".format(key, val))
+
+        f.write("MJD     FILTER    FLUX    FLUXERR\n")
+        for i in range(len(time)):
+            f.write("{} {} {} {}\n"
+                    .format(time[i], band[i], flux[i], fluxerr[i]))
+
+
+def generate_observations():
+    """Stub for extremely simple WFIRST observations.
+
+    Returns
+    -------
+    time : ndarray
+    band : ndarray
+    zp : float
+    zpsys : str
+    skynoise : float
+    gain : float
+
+    """
+
+    # observation parameters
+    t_min, t_max = 60310.0, 61041.0 # 2024-01-01, 2026-01-01
+    zp = 33.5
+    zpsys = 'ab'
+    skynoise = 213.0  # set so that max S/N = 10 for Ia with
+                      # z=1.7, M_B = -19.3 (vega) for zp = 33.5
+    epochs = np.arange(t_min, t_max, 5.0)  # 5 day cadence
+    time = np.ravel(epochs[:, None] + np.array([0., 0.2, 0.4, 0.6, 0.8]))
+    band = np.array(len(epochs) * bandnames)
+    gain = 1.0
+
+    return time, band, zp, zpsys, skynoise, gain
+
+
+def runsim(outdir, thresh=6.0):
+
+    if not os.path.exists(outdir):
+        os.mkdir(outdir)
+
+    # SN rate in #/(yr Mpc^3)
+    def sn1a_rate(z):
+        return (0.25e-4 + 0.75e-4 * z) if z < 1.0 else 1e-4
+
+    def sncc_rate(z):
+        if z <= 2.0:
+            return 0.5e-4 + 0.5e-4 * (1.0 + z)**2
+        else:
+            return sncc_rate(2.0)
+
+    # distribution for CC host dust
+    hostebv_dist = expon(scale=0.15)
+
+    # SN model parameters
+    sn_types = {'Ia': {'source': 'salt2-extended',
+                       'add_dust': False,
+                       'M_R_dist': norm(-19.37, 0.41),
+                       'param_dists': {'c': norm(0., 0.1),
+                                       'x1': norm(0., 1.0)},
+                       'rate': sn1a_rate},
+                'Ib': {'source': 'nugent-sn1bc',
+                       'add_dust': True,
+                       'M_R_dist': norm(-17.90, 0.80),
+                       'param_dists': {'hostebv': hostebv_dist},
+                       'rate': lambda z: 0.15 * sncc_rate(z)},
+                'Ic': {'source': 'nugent-sn1bc',
+                       'add_dust': True,
+                       'M_R_dist': norm(-18.30, 0.60),
+                       'param_dists': {'hostebv': hostebv_dist},
+                       'rate': lambda z: 0.15 * sncc_rate(z)},
+                'IcBL': {'source': 'nugent-hyper',
+                         'add_dust': True,
+                         'M_R_dist': norm(-17.90, 0.80),
+                         'param_dists': {'hostebv': hostebv_dist},
+                         'rate': lambda z: 0.1 * sncc_rate(z)},
+                'II-P': {'source': 'nugent-sn2p',
+                         'add_dust': True,
+                         'M_R_dist': norm(-16.56, 0.80),
+                         'param_dists': {'hostebv': hostebv_dist},
+                         'rate': lambda z: 0.25 * sncc_rate(z)},
+                'II-L': {'source': 'nugent-sn2l',
+                         'add_dust': True,
+                         'M_R_dist': norm(-17.66, 0.42),
+                         'param_dists': {'hostebv': hostebv_dist},
+                         'rate': lambda z: 0.25 * sncc_rate(z)},
+                'IIn': {'source': 'nugent-sn2n',
+                        'add_dust': True,
+                        'M_R_dist': norm(-18.25, 1.0),
+                        'param_dists': {'hostebv': hostebv_dist},
+                        'rate': lambda z: 0.1 * sncc_rate(z)}
+    }
+
+    # construct models
+    dust = sncosmo.F99Dust()
+    for name, sn_type in sn_types.items():
+        if sn_type['add_dust']:
+            model = sncosmo.Model(source=sn_type['source'], effects=[dust],
+                                  effect_frames=['rest'], effect_names=['host'])
+        else:
+            model = sncosmo.Model(source=sn_type['source'])
+        sn_type['model'] = model
+
+
+    # generate observations
+    time, band, zp, zpsys, skynoise, gain = generate_observations()
+
+    t_min, t_max = time.min(), time.max()
+    
+    # redshifts of all SNe (this determines total number of SNe as well)
+    zdist = sncosmo.zdist(0.5, 2.5, area=1.0, time=(t_max - t_min),
+                          ratefunc=lambda z: sn1a_rate(z) + sncc_rate(z))
+
+    type_names = list(sn_types.keys())
+    snid = 0  # running snid
+    for z in tqdm(zdist):
+
+        # get rate of all types at this redshift
+        rates = [sn_types[name]['rate'](z) for name in type_names]
+        ratesum = sum(rates)
+
+        # chose a type based on the rates
+        name = np.random.choice(type_names, p=[rate/ratesum for rate in rates])
+
+        # set z and t0
+        model = sn_types[name]['model']
+        model.set(z=z, t0=np.random.uniform(t_min, t_max))
+
+        # set amplitude
+        M_R = sn_types[name]['M_R_dist'].rvs()
+        model.set_source_peakabsmag(M_R, 'bessellr', 'vega')
+
+        # set other parameters (e.g., dust or c, x1)
+        params = {}
+        for param_name, dist in sn_types[name]['param_dists'].items():
+            params[param_name] = dist.rvs()
+        model.set(**params)
+
+        # generate light curve
+        flux = model.bandflux(band, time, zp=zp, zpsys=zpsys)
+
+        # errors and scatter fluxes
+        fluxerr = np.sqrt(skynoise**2 + np.abs(flux) / gain)
+        flux = np.random.normal(flux, fluxerr)
+
+        # check if any fluxes are significant
+        if thresh is not None and not np.any(flux / fluxerr > thresh):
+            continue
+
+        # save this LC
+        meta = {'REDSHIFT': z, 'TYPE': name, 'SUBTYPE': model.source.name,
+                'M_R': M_R}
+        meta.update(params)
+        write_lc_psnid("{}/lc{:06d}.dat".format(outdir, snid),
+                       time, band, flux, fluxerr, meta=meta)
+        snid += 1  # incremend snid counter
+
+
+if __name__ == '__main__':
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
+    parser.add_argument('outdir', nargs='?', default='lcs',
+                        help='desination directory for generated light curves')
+    parser.add_argument('--plotbands', help='Plot bands to this file')
+    args = parser.parse_args()
+
+    # if no optional arguments, run the simulation
+    if args.plotbands is None:
+        runsim(args.outdir)
+    else:
+        if args.plotbands is not None:
+            plot_bands(args.plotbands)

@@ -1,0 +1,10 @@
+# python
+__pycache__
+*.pyc
+.ipynb_checkpoints
+
+# emacs
+*~
+
+# default target directory for generated light curves
+lcs
