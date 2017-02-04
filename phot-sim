@@ -80,62 +80,90 @@ def runsim(outdir, thresh=6.0):
         return (0.25e-4 + 0.75e-4 * z) if z < 1.0 else 1e-4
 
     def sncc_rate(z):
+        """artificially boosted"""
         if z <= 2.0:
-            return 0.5e-4 + 0.5e-4 * (1.0 + z)**2
+            return 1.e-4 + 1.e-4 * (1.0 + z)**2
         else:
             return sncc_rate(2.0)
 
     # distribution for CC host dust
     hostebv_dist = expon(scale=0.15)
 
+    # SN Ia absolute magnitude correlation
+    alpha = 1.3
+    beta = 2.3
+    def absmag_offset(d):
+        return -alpha * d['x1'] + beta * d['c']
+
     # SN model parameters
-    sn_types = {'Ia': {'source': 'salt2-extended',
-                       'add_dust': False,
-                       'M_R_dist': norm(-19.37, 0.41),
-                       'param_dists': {'c': norm(0., 0.1),
-                                       'x1': norm(0., 1.0)},
-                       'rate': sn1a_rate},
-                'Ib': {'source': 'nugent-sn1bc',
-                       'add_dust': True,
-                       'M_R_dist': norm(-17.90, 0.80),
-                       'param_dists': {'hostebv': hostebv_dist},
-                       'rate': lambda z: 0.15 * sncc_rate(z)},
-                'Ic': {'source': 'nugent-sn1bc',
-                       'add_dust': True,
-                       'M_R_dist': norm(-18.30, 0.60),
-                       'param_dists': {'hostebv': hostebv_dist},
-                       'rate': lambda z: 0.15 * sncc_rate(z)},
-                'IcBL': {'source': 'nugent-hyper',
-                         'add_dust': True,
-                         'M_R_dist': norm(-17.90, 0.80),
-                         'param_dists': {'hostebv': hostebv_dist},
-                         'rate': lambda z: 0.1 * sncc_rate(z)},
-                'II-P': {'source': 'nugent-sn2p',
-                         'add_dust': True,
-                         'M_R_dist': norm(-16.56, 0.80),
-                         'param_dists': {'hostebv': hostebv_dist},
-                         'rate': lambda z: 0.25 * sncc_rate(z)},
-                'II-L': {'source': 'nugent-sn2l',
-                         'add_dust': True,
-                         'M_R_dist': norm(-17.66, 0.42),
-                         'param_dists': {'hostebv': hostebv_dist},
-                         'rate': lambda z: 0.25 * sncc_rate(z)},
-                'IIn': {'source': 'nugent-sn2n',
-                        'add_dust': True,
-                        'M_R_dist': norm(-18.25, 1.0),
-                        'param_dists': {'hostebv': hostebv_dist},
-                        'rate': lambda z: 0.1 * sncc_rate(z)}
+    sn_types = {
+        'Ia': {'sources': ['salt2-extended'],
+               'add_dust': False,
+               'absmag_dist': norm(-19.3, 0.17),
+               'param_dists': {'c': norm(0., 0.12),
+                               'x1': norm(0., 1.0)},
+               'absmag_offset': absmag_offset,
+               'rate': sn1a_rate,
+               'absmag_band': 'bessellb'},
+        'Ib': {'sources': ['s11-2005hl', 's11-2005hm', 's11-2006jo',
+                          'snana-2004gv', 'snana-2006ep', 'snana-2007y',
+                          'snana-2004ib', 'snana-2005hm', 'snana-2006jo',
+                          'snana-2007nc'],
+               'add_dust': True,
+               'absmag_dist': norm(-17.90, 0.80),
+               'param_dists': {'hostebv': hostebv_dist},
+               'rate': lambda z: 0.1 * sncc_rate(z)},
+        'Ic': {'sources': ['s11-2006fo', 'snana-2004fe', 'snana-2004gq',
+                           'snana-sdss004012', 'snana-2006fo',
+                           'snana-sdss014475', 'snana-2006lc', 'snana-04d1la',
+                           'snana-04d4jv'],
+               'add_dust': True,
+               'absmag_dist': norm(-18.30, 0.60),
+               'param_dists': {'hostebv': hostebv_dist},
+               'rate': lambda z: 0.1 * sncc_rate(z)},
+        'IcBL': {'sources': ['nugent-hyper'],
+                 'add_dust': True,
+                 'absmag_dist': norm(-17.90, 0.80),
+                 'param_dists': {'hostebv': hostebv_dist},
+                 'rate': lambda z: 0.02 * sncc_rate(z)},
+        'II-P': {'sources': ['s11-2005lc', 's11-2005gi', 's11-2006jl',
+                             'snana-2004hx', 'snana-2005gi', 'snana-2006gq',
+                             'snana-2006kn', 'snana-2006jl', 'snana-2006iw',
+                             'snana-2006kv', 'snana-2006ns', 'snana-2007iz',
+                             'snana-2007nr', 'snana-2007kw', 'snana-2007ky',
+                             'snana-2007lj', 'snana-2007lb', 'snana-2007ll',
+                             'snana-2007nw', 'snana-2007ld', 'snana-2007md',
+                             'snana-2007lz', 'snana-2007lx', 'snana-2007og',
+                             'snana-2007ny', 'snana-2007nv', 'snana-2007pg'],
+                 'add_dust': True,
+                 'absmag_dist': norm(-16.56, 0.80),
+                 'param_dists': {'hostebv': hostebv_dist},
+                 'rate': lambda z: 0.63 * sncc_rate(z)},
+        'II-L': {'sources': ['s11-2004hx', 'snana-2007ms'],
+                 'add_dust': True,
+                 'absmag_dist': norm(-17.66, 0.42),
+                 'param_dists': {'hostebv': hostebv_dist},
+                 'rate': lambda z: 0.05 * sncc_rate(z)},
+        'IIn': {'sources': ['nugent-sn2n', 'snana-2006ez', 'snana-2006ix'],
+                'add_dust': True,
+                'absmag_dist': norm(-18.25, 1.0),
+                'param_dists': {'hostebv': hostebv_dist},
+                'rate': lambda z: 0.1 * sncc_rate(z)}
     }
 
     # construct models
     dust = sncosmo.F99Dust()
     for name, sn_type in sn_types.items():
-        if sn_type['add_dust']:
-            model = sncosmo.Model(source=sn_type['source'], effects=[dust],
-                                  effect_frames=['rest'], effect_names=['host'])
-        else:
-            model = sncosmo.Model(source=sn_type['source'])
-        sn_type['model'] = model
+        sn_type['models'] = []
+        for source in sn_type['sources']:
+            if sn_type['add_dust']:
+                model = sncosmo.Model(source=source,
+                                      effects=[dust],
+                                      effect_frames=['rest'],
+                                      effect_names=['host'])
+            else:
+                model = sncosmo.Model(source=source)
+            sn_type['models'].append(model)
 
 
     # generate observations
@@ -144,36 +172,47 @@ def runsim(outdir, thresh=6.0):
     t_min, t_max = time.min(), time.max()
     
     # redshifts of all SNe (this determines total number of SNe as well)
-    zdist = sncosmo.zdist(0.5, 2.5, area=1.0, time=(t_max - t_min),
+    zdist = sncosmo.zdist(0.5, 2.5, area=8.0, time=(t_max - t_min),
                           ratefunc=lambda z: sn1a_rate(z) + sncc_rate(z))
 
     type_names = list(sn_types.keys())
     snid = 0  # running snid
-    for z in tqdm(zdist):
+    for z in tqdm(list(zdist)):
 
         # get rate of all types at this redshift
         rates = [sn_types[name]['rate'](z) for name in type_names]
         ratesum = sum(rates)
 
-        # chose a type based on the rates
+        # choose a type based on the rates
         name = np.random.choice(type_names, p=[rate/ratesum for rate in rates])
+        sn_type = sn_types[name]
+
+        # choose a model within this type (equally weighted)
+        model = np.random.choice(sn_type['models'])
 
         # set z and t0
-        model = sn_types[name]['model']
+        # TODO: consider model.[mintime,maxtime]() when setting this.
         model.set(z=z, t0=np.random.uniform(t_min, t_max))
-
-        # set amplitude
-        M_R = sn_types[name]['M_R_dist'].rvs()
-        model.set_source_peakabsmag(M_R, 'bessellr', 'vega')
 
         # set other parameters (e.g., dust or c, x1)
         params = {}
-        for param_name, dist in sn_types[name]['param_dists'].items():
+        for param_name, dist in sn_type['param_dists'].items():
             params[param_name] = dist.rvs()
         model.set(**params)
 
+        # set amplitude
+        absmag = sn_type['absmag_dist'].rvs()
+        absmag += sn_type.get('absmag_corr', lambda x: 0.0)(params)
+        absmag_band = sn_type.get('absmag_band', 'bessellr')
+        model.set_source_peakabsmag(absmag, absmag_band, 'vega')
+
+        # don't generate points for times after model.maxtime()
+        mask = time < model.maxtime()
+        ptime = time[mask]
+        pband = band[mask]
+
         # generate light curve
-        flux = model.bandflux(band, time, zp=zp, zpsys=zpsys)
+        flux = model.bandflux(pband, ptime, zp=zp, zpsys=zpsys)
 
         # errors and scatter fluxes
         fluxerr = np.sqrt(skynoise**2 + np.abs(flux) / gain)
@@ -185,10 +224,10 @@ def runsim(outdir, thresh=6.0):
 
         # save this LC
         meta = {'REDSHIFT': z, 'TYPE': name, 'SUBTYPE': model.source.name,
-                'M_R': M_R}
+                'absmag': absmag}
         meta.update(params)
         write_lc_psnid("{}/lc{:06d}.dat".format(outdir, snid),
-                       time, band, flux, fluxerr, meta=meta)
+                       ptime, pband, flux, fluxerr, meta=meta)
         snid += 1  # incremend snid counter
 
 
