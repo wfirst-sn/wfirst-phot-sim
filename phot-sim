@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import copy
 import os
 
 import numpy as np
@@ -8,6 +9,8 @@ from astropy.time import Time
 from astropy.table import Table
 from scipy.stats import norm, expon
 from tqdm import tqdm
+
+import dm15source  # register dm15 source
 
 # register bandpasses
 bandnames = ['f184', 'h158', 'j129', 'y106', 'z087']
@@ -97,12 +100,19 @@ def runsim(outdir, thresh=6.0):
 
     # SN model parameters
     sn_types = {
-        'Ia': {'sources': ['salt2-extended'],
-               'add_dust': False,
-               'absmag_dist': norm(-19.3, 0.17),
-               'param_dists': {'c': norm(0., 0.12),
-                               'x1': norm(0., 1.0)},
-               'absmag_offset': absmag_offset,
+        #'Ia': {'sources': ['salt2-extended'],
+        #       'add_dust': False,
+        #       'absmag_dist': norm(-19.3, 0.17),
+        #       'param_dists': {'c': norm(0., 0.12),
+        #                       'x1': norm(0., 1.0)},
+        #       'absmag_offset': absmag_offset,
+        #       'rate': sn1a_rate,
+        #       'absmag_band': 'bessellb'},
+        'Ia': {'sources': ['dm15'],
+               'add_dust': True,
+               'absmag_dist': norm(-19.32, 0.17),
+               'param_dists': {'dm15': norm(1.1, 0.3),
+                               'hostebv': expon(scale=0.129)},  # tau = 0.4/3.1
                'rate': sn1a_rate,
                'absmag_band': 'bessellb'},
         'Ib': {'sources': ['s11-2005hl', 's11-2005hm', 's11-2006jo',
@@ -188,23 +198,31 @@ def runsim(outdir, thresh=6.0):
         sn_type = sn_types[name]
 
         # choose a model within this type (equally weighted)
-        model = np.random.choice(sn_type['models'])
+        # [copy to maintain parameters of the original]
+        model = copy.copy(np.random.choice(sn_type['models']))
 
         # set z and t0
         # TODO: consider model.[mintime,maxtime]() when setting this.
         model.set(z=z, t0=np.random.uniform(t_min, t_max))
 
-        # set other parameters (e.g., dust or c, x1)
+        # set amplitude
+        absmag = sn_type['absmag_dist'].rvs()
+        #absmag += sn_type.get('absmag_corr', lambda x: 0.0)(params)
+        absmag_band = sn_type.get('absmag_band', 'bessellr')
+        model.set_source_peakabsmag(absmag, absmag_band, 'vega')
+
+        # Set other parameters.
+        # we would normally do this *before* setting amplitude, so that the
+        # absolute magnitude is correct after setting c, x1 (for SALT).
+        # however, for the dm15 model, the absolute magnitude should be set
+        # for the fiducial value of dm15=1.1, *not* for whatever value it
+        # actually assumes for each SN. (The amplitude-dm15 correlation is
+        # built into the model.)
+        # Hence the commented-out "absmag += ..." line above.
         params = {}
         for param_name, dist in sn_type['param_dists'].items():
             params[param_name] = dist.rvs()
         model.set(**params)
-
-        # set amplitude
-        absmag = sn_type['absmag_dist'].rvs()
-        absmag += sn_type.get('absmag_corr', lambda x: 0.0)(params)
-        absmag_band = sn_type.get('absmag_band', 'bessellr')
-        model.set_source_peakabsmag(absmag, absmag_band, 'vega')
 
         # don't generate points for times after model.maxtime()
         mask = time < model.maxtime()
