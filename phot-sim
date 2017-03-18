@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import copy
+import math
 import os
 
 import numpy as np
@@ -13,10 +14,27 @@ from tqdm import tqdm
 import dm15source  # register dm15 source
 
 # register bandpasses
-bandnames = ['f184', 'h158', 'j129', 'y106', 'z087']
+bandnames = ['f184', 'h158', 'j129', 'y106', 'z087', 'r062']
 for name in bandnames:
     band = sncosmo.read_bandpass('bandpasses/{}.txt'.format(name), name=name)
     sncosmo.register(band, name=name)
+
+# register some other sources that we'll use.
+for fname, name in [('models/LOWZ-1993J.SED', 'snana-1993j'),
+                    ('models/LOWZ-2008ax.SED', 'snana-2008ax'),
+                    ('models/LOWZ-2011dh.SED', 'snana-2011dh'),
+                    ('models/LOWZ-2011fu.SED', 'snana-2011fu')]:
+    phase, wave, flux = sncosmo.read_griddata_ascii(fname)
+
+    # These are only defined from 2500 to 10990 A rest-frame.
+    # Extend spectra to lower and higher wavelengths with zeros.
+    wave = np.concatenate((np.linspace(1000., 2490., 150),
+                           wave,
+                           np.linspace(11000., 25000., 141)))
+    new_flux = np.zeros((len(phase), len(wave)), dtype=np.float64)
+    new_flux[:, 150:(150+flux.shape[1])] = flux
+    source = sncosmo.TimeSeriesSource(phase, wave, new_flux, name=name)
+    sncosmo.register(source, name=name)
 
 
 def plot_bands(fname):
@@ -45,32 +63,92 @@ def write_lc_psnid(fname, time, band, flux, fluxerr, meta=None):
                     .format(time[i], band[i], flux[i], fluxerr[i]))
 
 
-def generate_observations():
+def generate_observations(exptimes):
     """Stub for extremely simple WFIRST observations.
+
+    Parameters
+    ----------
+    exptimes : dict
+        Dictionary mapping band names (str) to exposure times in s.
 
     Returns
     -------
-    time : ndarray
-    band : ndarray
-    zp : float
-    zpsys : str
-    skynoise : float
-    gain : float
+    dict
+        Has following keys:
+
+        time : ndarray
+        band : ndarray
+        zp : ndarray
+        zpsys : str
+        skynoise : ndarray
+        gain : float
 
     """
 
+    # 1 second AB zeropoints (from David Rubin via email 16 March 2017)
+    zp_1s = {'r062': 26.9927,
+             'z087': 26.3949,
+             'y106': 26.4078,
+             'j129': 26.3535,
+             'h158': 26.4095,
+             'f184': 25.9582}
+
+    
+    # sky noise in a 1s exposure (sigma)
+    skynoise_1s = {'r062': 3.3,
+                   'z087': 3.3,
+                   'y106': 4.,
+                   'j129': 4.5,
+                   'h158': 5.1,
+                   'f184': 5.3}
+
     # observation parameters
     t_min, t_max = 60310.0, 61041.0 # 2024-01-01, 2026-01-01
-    zp = 33.5
     zpsys = 'ab'
-    skynoise = 213.0  # set so that max S/N = 10 for Ia with
-                      # z=1.7, M_B = -19.3 (vega) for zp = 33.5
+    
+    bandnames = list(exptimes.keys())  # band for this field
+        
     epochs = np.arange(t_min, t_max, 5.0)  # 5 day cadence
-    time = np.ravel(epochs[:, None] + np.array([0., 0.2, 0.4, 0.6, 0.8]))
+
+    time = np.ravel(epochs[:, None] + np.linspace(0., 0.5, len(bandnames)))
     band = np.array(len(epochs) * bandnames)
+    zp = np.array([zp_1s[b] + 2.5 * math.log10(exptimes[b])
+                   for b in band])
+    skynoise = np.array([skynoise_1s[b] * math.sqrt(exptimes[b])
+                         for b in band])
     gain = 1.0
 
-    return time, band, zp, zpsys, skynoise, gain
+    return {'zpsys': zpsys,
+            'time': time,
+            'band': band,
+            'zp': zp,
+            'skynoise': skynoise,
+            'gain': gain}
+
+
+def print_sn():
+    """Print S/N in each band for a 'typical' SN at z=1.7 and even exposure
+    times."""
+
+    model = sncosmo.Model('salt2-extended')
+    model.set(z=1.7, t0=60500.)  # t0 just somewhere in the middle of obs
+    model.set_source_peakabsmag(-19.3, 'bessellb', 'vega')
+
+    # get observations for 265s exposure in each band
+    exptimes = {k: 265.0 for k in ['r062', 'z087', 'y106',
+                                   'j129', 'h158', 'f184']}
+    obs = generate_observations(exptimes)
+
+    # for each band, calculated the SN light curve
+    for bandname in set(obs['band']):
+        mask = obs['band'] == bandname
+        flux = model.bandflux(bandname, obs['time'][mask], zp=obs['zp'][mask],
+                              zpsys=obs['zpsys'])
+
+        # errors and scatter fluxes
+        fluxerr = np.sqrt(obs['skynoise'][mask]**2 + np.abs(flux))
+
+        print("{} : {}".format(bandname, np.max(flux/fluxerr)))
 
 
 def runsim(outdir, thresh=6.0):
@@ -122,7 +200,7 @@ def runsim(outdir, thresh=6.0):
                'add_dust': True,
                'absmag_dist': norm(-17.90, 0.80),
                'param_dists': {'hostebv': hostebv_dist},
-               'rate': lambda z: 0.1 * sncc_rate(z)},
+               'rate': lambda z: 0.09 * sncc_rate(z)},
         'Ic': {'sources': ['s11-2006fo', 'snana-2004fe', 'snana-2004gq',
                            'snana-sdss004012', 'snana-2006fo',
                            'snana-sdss014475', 'snana-2006lc', 'snana-04d1la',
@@ -130,7 +208,7 @@ def runsim(outdir, thresh=6.0):
                'add_dust': True,
                'absmag_dist': norm(-18.30, 0.60),
                'param_dists': {'hostebv': hostebv_dist},
-               'rate': lambda z: 0.1 * sncc_rate(z)},
+               'rate': lambda z: 0.09 * sncc_rate(z)},
         'IcBL': {'sources': ['nugent-hyper'],
                  'add_dust': True,
                  'absmag_dist': norm(-17.90, 0.80),
@@ -148,7 +226,7 @@ def runsim(outdir, thresh=6.0):
                  'add_dust': True,
                  'absmag_dist': norm(-16.56, 0.80),
                  'param_dists': {'hostebv': hostebv_dist},
-                 'rate': lambda z: 0.63 * sncc_rate(z)},
+                 'rate': lambda z: 0.43 * sncc_rate(z)},
         'II-L': {'sources': ['s11-2004hx', 'snana-2007ms'],
                  'add_dust': True,
                  'absmag_dist': norm(-17.66, 0.42),
@@ -158,7 +236,13 @@ def runsim(outdir, thresh=6.0):
                 'add_dust': True,
                 'absmag_dist': norm(-18.25, 1.0),
                 'param_dists': {'hostebv': hostebv_dist},
-                'rate': lambda z: 0.1 * sncc_rate(z)}
+                'rate': lambda z: 0.07 * sncc_rate(z)},
+        'IIb': {'sources': ['snana-1993j', 'snana-2008ax', 'snana-2011dh',
+                            'snana-2011fu'],
+                'add_dust': True,
+                'absmag_dist': norm(-17.2, 1.0),
+                'param_dists': {'hostebv': hostebv_dist},
+                'rate': lambda z: 0.25 * sncc_rate(z)}
     }
 
     # construct models
@@ -177,76 +261,102 @@ def runsim(outdir, thresh=6.0):
 
 
     # generate observations
-    time, band, zp, zpsys, skynoise, gain = generate_observations()
-
-    t_min, t_max = time.min(), time.max()
-    
-    # redshifts of all SNe (this determines total number of SNe as well)
-    zdist = sncosmo.zdist(0.5, 2.5, area=8.0, time=(t_max - t_min),
-                          ratefunc=lambda z: sn1a_rate(z) + sncc_rate(z))
-
-    type_names = list(sn_types.keys())
+    fields = {'wide': {'area': 14.0,
+                       'zmax': 1.7,
+                       'exptime': {'r062': 48.025,
+                                   'z087': 50.85,
+                                   'y106': 56.5,
+                                   'j129': 87.575,
+                                   'h158': 135.6}},
+              'deep': {'area': 6.0,
+                       'zmax': 2.5,
+                       'exptime': {'z087': 107.35,
+                                   'y106': 245.775,
+                                   'j129': 268.375,
+                                   'h158': 347.475,
+                                   'f184': 1002.875}}}
     snid = 0  # running snid
-    for z in tqdm(list(zdist)):
+    for field_name, field in fields.items():
+        
+        obs = generate_observations(field['exptime'])
+        time = obs['time']
+        band = obs['band']
+        zp = obs['zp']
+        zpsys = obs['zpsys']
+        skynoise = obs['skynoise']
+        gain = obs['gain']
 
-        # get rate of all types at this redshift
-        rates = [sn_types[name]['rate'](z) for name in type_names]
-        ratesum = sum(rates)
+        t_min, t_max = time.min(), time.max()
+    
+        # redshifts of all SNe (this determines total number of SNe as well)
+        zdist = sncosmo.zdist(0.4, field['zmax'], area=field['area'],
+                              time=(t_max - t_min),
+                              ratefunc=lambda z: sn1a_rate(z) + sncc_rate(z))
 
-        # choose a type based on the rates
-        name = np.random.choice(type_names, p=[rate/ratesum for rate in rates])
-        sn_type = sn_types[name]
+        type_names = list(sn_types.keys())
+        for z in tqdm(list(zdist), desc=field_name):
 
-        # choose a model within this type (equally weighted)
-        # [copy to maintain parameters of the original]
-        model = copy.copy(np.random.choice(sn_type['models']))
+            # get rate of all types at this redshift
+            rates = [sn_types[name]['rate'](z) for name in type_names]
+            ratesum = sum(rates)
 
-        # set z and t0
-        # TODO: consider model.[mintime,maxtime]() when setting this.
-        model.set(z=z, t0=np.random.uniform(t_min, t_max))
+            # choose a type based on the rates
+            name = np.random.choice(type_names,
+                                    p=[rate/ratesum for rate in rates])
+            sn_type = sn_types[name]
 
-        # set amplitude
-        absmag = sn_type['absmag_dist'].rvs()
-        #absmag += sn_type.get('absmag_corr', lambda x: 0.0)(params)
-        absmag_band = sn_type.get('absmag_band', 'bessellr')
-        model.set_source_peakabsmag(absmag, absmag_band, 'vega')
+            # choose a model within this type (equally weighted)
+            # [copy to maintain parameters of the original]
+            model = copy.copy(np.random.choice(sn_type['models']))
 
-        # Set other parameters.
-        # we would normally do this *before* setting amplitude, so that the
-        # absolute magnitude is correct after setting c, x1 (for SALT).
-        # however, for the dm15 model, the absolute magnitude should be set
-        # for the fiducial value of dm15=1.1, *not* for whatever value it
-        # actually assumes for each SN. (The amplitude-dm15 correlation is
-        # built into the model.)
-        # Hence the commented-out "absmag += ..." line above.
-        params = {}
-        for param_name, dist in sn_type['param_dists'].items():
-            params[param_name] = dist.rvs()
-        model.set(**params)
+            # set z and t0
+            # TODO: consider model.[mintime,maxtime]() when setting this.
+            model.set(z=z, t0=np.random.uniform(t_min, t_max))
 
-        # don't generate points for times after model.maxtime()
-        mask = time < model.maxtime()
-        ptime = time[mask]
-        pband = band[mask]
+            # set amplitude
+            absmag = sn_type['absmag_dist'].rvs()
+            #absmag += sn_type.get('absmag_corr', lambda x: 0.0)(params)
+            absmag_band = sn_type.get('absmag_band', 'bessellr')
+            model.set_source_peakabsmag(absmag, absmag_band, 'vega')
 
-        # generate light curve
-        flux = model.bandflux(pband, ptime, zp=zp, zpsys=zpsys)
+            # Set other parameters.
+            # we would normally do this *before* setting amplitude, so that the
+            # absolute magnitude is correct after setting c, x1 (for SALT).
+            # however, for the dm15 model, the absolute magnitude should be set
+            # for the fiducial value of dm15=1.1, *not* for whatever value it
+            # actually assumes for each SN. (The amplitude-dm15 correlation is
+            # built into the model.)
+            # Hence the commented-out "absmag += ..." line above.
+            params = {}
+            for param_name, dist in sn_type['param_dists'].items():
+                params[param_name] = dist.rvs()
+            model.set(**params)
 
-        # errors and scatter fluxes
-        fluxerr = np.sqrt(skynoise**2 + np.abs(flux) / gain)
-        flux = np.random.normal(flux, fluxerr)
+            # don't generate points for times after model.maxtime()
+            mask = time < model.maxtime()
+            ptime = time[mask]
+            pband = band[mask]
+            pzp = zp[mask]
+            pskynoise = skynoise[mask]
+            
+            # generate light curve
+            flux = model.bandflux(pband, ptime, zp=pzp, zpsys=zpsys)
 
-        # check if any fluxes are significant
-        if thresh is not None and not np.any(flux / fluxerr > thresh):
-            continue
+            # errors and scatter fluxes
+            fluxerr = np.sqrt(pskynoise**2 + np.abs(flux) / gain)
+            flux = np.random.normal(flux, fluxerr)
 
-        # save this LC
-        meta = {'REDSHIFT': z, 'TYPE': name, 'SUBTYPE': model.source.name,
-                'absmag': absmag}
-        meta.update(params)
-        write_lc_psnid("{}/lc{:06d}.dat".format(outdir, snid),
-                       ptime, pband, flux, fluxerr, meta=meta)
-        snid += 1  # incremend snid counter
+            # check if any fluxes are significant
+            if thresh is not None and not np.any(flux / fluxerr > thresh):
+                continue
+
+            # save this LC
+            meta = {'REDSHIFT': z, 'TYPE': name, 'SUBTYPE': model.source.name,
+                    'absmag': absmag}
+            meta.update(params)
+            write_lc_psnid("{}/lc{:06d}.dat".format(outdir, snid),
+                           ptime, pband, flux, fluxerr, meta=meta)
+            snid += 1  # incremend snid counter
 
 
 if __name__ == '__main__':
@@ -256,11 +366,12 @@ if __name__ == '__main__':
     parser.add_argument('outdir', nargs='?', default='lcs',
                         help='desination directory for generated light curves')
     parser.add_argument('--plotbands', help='Plot bands to this file')
+    parser.add_argument('--sn', action='store_true', default=False, help='If specified, calculate some S/N instead')
     args = parser.parse_args()
 
-    # if no optional arguments, run the simulation
-    if args.plotbands is None:
-        runsim(args.outdir)
+    if args.plotbands is not None:
+        plot_bands(args.plotbands)
+    elif args.sn:
+        print_sn()
     else:
-        if args.plotbands is not None:
-            plot_bands(args.plotbands)
+        runsim(args.outdir)
